@@ -36,6 +36,7 @@ interface QRSettings {
   errorCorrection: 'L' | 'M' | 'Q' | 'H';
   size: number;
   fgColor: string;
+  fgColorEnd: string;
   bgColor: string;
   transparentBg: boolean;
   margin: number;
@@ -43,6 +44,8 @@ interface QRSettings {
   logo: string | null;
   logoSize: number;
   frame: 'none' | 'scan_me' | 'website' | 'contact';
+  watermarkText?: string;
+  watermarkOpacity?: number;
 }
 
 interface HistoryItem {
@@ -89,6 +92,7 @@ const defaultSettings: QRSettings = {
   errorCorrection: 'M',
   size: 300,
   fgColor: '#000000',
+  fgColorEnd: '#000000',
   bgColor: '#ffffff',
   transparentBg: false,
   margin: 4,
@@ -96,6 +100,8 @@ const defaultSettings: QRSettings = {
   logo: null,
   logoSize: 20,
   frame: 'none',
+  watermarkText: '',
+  watermarkOpacity: 0.3,
 };
 
 const contentTypes: { id: ContentType; label: string; icon: React.ReactNode }[] = [
@@ -286,6 +292,18 @@ const translations = {
     photoUrl: "Photo URL (Base64 or Link)",
     batchDelayLabel: "Generation Delay (ms)",
     batchDelayHelp: "Introduces a short pause between generating each code to prevent browser freezing.",
+    fgColorStart: "Foreground Start Color",
+    fgColorEnd: "Foreground End Color",
+    watermarkHeader: "Watermark Overlay",
+    watermarkTextLabel: "Watermark Text",
+    watermarkOpacityLabel: "Watermark Opacity",
+    batchHistoryTitle: "Batch Download History",
+    viewBatchHistory: "View Batch Download History",
+    noBatchHistory: "No previous batch downloads found",
+    batchRowLimit: "Displays the last 5 batch jobs across sessions.",
+    downloadZip: "Download ZIP",
+    batchItemsCount: "QR codes generated",
+    closeHistory: "Close History",
   },
   fa: {
     appTitle: "کد ساز QR",
@@ -353,19 +371,106 @@ const translations = {
     photoUrl: "آدرس عکس (لینک یا کد Base64)",
     batchDelayLabel: "تاخیر ساخت (میلی‌ثانیه)",
     batchDelayHelp: "برای جلوگیری از هنگ کردن مرورگر، یک وقفه کوتاه بین ساخت هر کد قرار می‌دهد.",
+    fgColorStart: "رنگ شروع پیش‌زمینه",
+    fgColorEnd: "رنگ پایان پیش‌زمینه",
+    watermarkHeader: "واترمارک متنی",
+    watermarkTextLabel: "متن واترمارک",
+    watermarkOpacityLabel: "شفافیت واترمارک",
+    batchHistoryTitle: "تاریخچه دانلود بسته‌ها",
+    viewBatchHistory: "مشاهده تاریخچه دانلود بسته‌ها",
+    noBatchHistory: "هیچ بسته دانلودی در تاریخچه یافت نشد",
+    batchRowLimit: "نمایش آخرین ۵ بسته زیپ اسکن و دانلود شده در مرورگر.",
+    downloadZip: "دانلود فایل ZIP",
+    batchItemsCount: "کد QR ساخته شده",
+    closeHistory: "بستن تاریخچه",
   }
 };
 
 const colorPalettes = [
-  { id: 'classic', name: 'Classic Dark', fgColor: '#000000', bgColor: '#ffffff' },
-  { id: 'midnight', name: 'Midnight Slate', fgColor: '#1e293b', bgColor: '#f8fafc' },
-  { id: 'ocean', name: 'Ocean Blue', fgColor: '#1d4ed8', bgColor: '#f0f9ff' },
-  { id: 'emerald', name: 'Forest Emerald', fgColor: '#047857', bgColor: '#f0fdf4' },
-  { id: 'sunset', name: 'Sunset Rose', fgColor: '#be123c', bgColor: '#fff1f2' },
-  { id: 'lavender', name: 'Purple Dream', fgColor: '#6d28d9', bgColor: '#faf5ff' },
-  { id: 'cyberpunk', name: 'Cyber Neon', fgColor: '#06b6d4', bgColor: '#0f172a' },
-  { id: 'chocolate', name: 'Warm Mocha', fgColor: '#78350f', bgColor: '#fdf8f6' },
+  { id: 'classic', name: 'Classic Dark', fgColor: '#000000', fgColorEnd: '#1a1a1a', bgColor: '#ffffff' },
+  { id: 'midnight', name: 'Midnight Slate', fgColor: '#1e293b', fgColorEnd: '#334155', bgColor: '#f8fafc' },
+  { id: 'ocean', name: 'Ocean Blue', fgColor: '#1d4ed8', fgColorEnd: '#3b82f6', bgColor: '#f0f9ff' },
+  { id: 'emerald', name: 'Forest Emerald', fgColor: '#047857', fgColorEnd: '#10b981', bgColor: '#f0fdf4' },
+  { id: 'sunset', name: 'Sunset Rose', fgColor: '#be123c', fgColorEnd: '#f43f5e', bgColor: '#fff1f2' },
+  { id: 'lavender', name: 'Purple Dream', fgColor: '#6d28d9', fgColorEnd: '#8b5cf6', bgColor: '#faf5ff' },
+  { id: 'cyberpunk', name: 'Cyber Neon', fgColor: '#06b6d4', fgColorEnd: '#0d9488', bgColor: '#0f172a' },
+  { id: 'chocolate', name: 'Warm Mocha', fgColor: '#78350f', fgColorEnd: '#b45309', bgColor: '#fdf8f6' },
 ];
+
+interface BatchLog {
+  id: string;
+  timestamp: number;
+  rowCount: number;
+  filename: string;
+  blob: Blob;
+}
+
+const initDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('QRBatchHistoryDB', 1);
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains('batchLogs')) {
+        db.createObjectStore('batchLogs', { keyPath: 'id' });
+      }
+    };
+    request.onsuccess = (event) => {
+      resolve((event.target as IDBOpenDBRequest).result);
+    };
+    request.onerror = (event) => {
+      reject((event.target as IDBOpenDBRequest).error);
+    };
+  });
+};
+
+const saveBatchLog = async (log: BatchLog) => {
+  try {
+    const db = await initDB();
+    const transaction = db.transaction('batchLogs', 'readwrite');
+    const store = transaction.objectStore('batchLogs');
+    
+    const allLogs = await new Promise<BatchLog[]>((resolve, reject) => {
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const sorted = (req.result || []).sort((a: BatchLog, b: BatchLog) => a.timestamp - b.timestamp);
+        resolve(sorted);
+      };
+      req.onerror = () => reject(req.error);
+    });
+
+    if (allLogs.length >= 5) {
+      const excessCount = allLogs.length - 4;
+      for (let i = 0; i < excessCount; i++) {
+        store.delete(allLogs[i].id);
+      }
+    }
+
+    store.put(log);
+  } catch (err) {
+    console.error('Failed to save batch log to IndexedDB:', err);
+  }
+};
+
+const getBatchLogs = async (): Promise<BatchLog[]> => {
+  try {
+    const db = await initDB();
+    const transaction = db.transaction('batchLogs', 'readonly');
+    const store = transaction.objectStore('batchLogs');
+    return new Promise((resolve, reject) => {
+      const request = store.getAll();
+      request.onsuccess = () => {
+        const sorted = (request.result || []).sort((a: BatchLog, b: BatchLog) => b.timestamp - a.timestamp);
+        resolve(sorted);
+      };
+      request.onerror = () => {
+        reject(request.error);
+      };
+    });
+  } catch (err) {
+    console.error('Failed to get batch logs:', err);
+    return [];
+  }
+};
 
 function App() {
   const [contentType, setContentType] = useState<ContentType>('url');
@@ -411,6 +516,8 @@ function App() {
   const [showCustomColors, setShowCustomColors] = useState<boolean>(false);
   const [batchItems, setBatchItems] = useState<BatchItem[]>([]);
   const [csvError, setCsvError] = useState<string | null>(null);
+  const [showBatchHistoryModal, setShowBatchHistoryModal] = useState(false);
+  const [batchLogs, setBatchLogs] = useState<BatchLog[]>([]);
   const [analytics, setAnalytics] = useState<Record<string, number>>({
     url: 4,
     text: 2,
@@ -429,6 +536,15 @@ function App() {
   const scannerCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scannerAnimationRef = useRef<number>();
+
+  const loadBatchLogs = useCallback(async () => {
+    const logs = await getBatchLogs();
+    setBatchLogs(logs);
+  }, []);
+
+  useEffect(() => {
+    loadBatchLogs();
+  }, [loadBatchLogs]);
 
   // Load history and presets from localStorage
   useEffect(() => {
@@ -609,20 +725,34 @@ function App() {
         errorCorrectionLevel: settings.errorCorrection,
         margin: settings.margin,
         color: {
-          dark: settings.fgColor,
-          light: settings.transparentBg ? 'transparent' : settings.bgColor,
+          dark: '#000000',
+          light: 'transparent',
         },
         width: settings.size,
       };
 
-      // Generate PNG data URL
+      // Generate PNG data URL (black on transparent to color with canvas)
       const dataUrl = await QRCode.toDataURL(content, options);
 
-      // Generate SVG
+      // Generate SVG with gradient URL references
       let svg = await QRCode.toString(content, {
         ...options,
+        color: {
+          dark: 'url(#qr-gradient)',
+          light: settings.transparentBg ? 'transparent' : settings.bgColor,
+        },
         type: 'svg',
       });
+
+      // Inject linear gradient defs into the SVG
+      const gradientDefs = `
+  <defs>
+    <linearGradient id="qr-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="${settings.fgColor}" />
+      <stop offset="100%" stop-color="${settings.fgColorEnd || settings.fgColor}" />
+    </linearGradient>
+  </defs>`;
+      svg = svg.replace(/<svg[^>]*>/, match => `${match}${gradientDefs}`);
 
       // Frame and logo rendering on canvas
       const hasFrame = settings.frame && settings.frame !== 'none';
@@ -645,6 +775,20 @@ function App() {
         img.src = dataUrl;
       });
 
+      // Create offscreen canvas to apply linear gradient to the QR code modules
+      const qrCanvas = document.createElement('canvas');
+      qrCanvas.width = settings.size;
+      qrCanvas.height = settings.size;
+      const qrCtx = qrCanvas.getContext('2d')!;
+      
+      qrCtx.drawImage(qrImg, 0, 0, settings.size, settings.size);
+      qrCtx.globalCompositeOperation = 'source-in';
+      const qrGrad = qrCtx.createLinearGradient(0, 0, settings.size, settings.size);
+      qrGrad.addColorStop(0, settings.fgColor);
+      qrGrad.addColorStop(1, settings.fgColorEnd || settings.fgColor);
+      qrCtx.fillStyle = qrGrad;
+      qrCtx.fillRect(0, 0, settings.size, settings.size);
+
       if (hasFrame) {
         // Draw frame background using the foreground color
         ctx.fillStyle = settings.fgColor;
@@ -654,8 +798,8 @@ function App() {
         ctx.fillStyle = settings.bgColor;
         ctx.fillRect(framePadding, framePadding, settings.size, settings.size);
 
-        // Draw QR code inside the container
-        ctx.drawImage(qrImg, framePadding, framePadding, settings.size, settings.size);
+        // Draw QR code canvas inside the container
+        ctx.drawImage(qrCanvas, framePadding, framePadding, settings.size, settings.size);
 
         // Draw Frame Label Text
         const frameText = getFrameText(settings.frame);
@@ -670,7 +814,7 @@ function App() {
           ctx.fillStyle = settings.bgColor;
           ctx.fillRect(0, 0, settings.size, settings.size);
         }
-        ctx.drawImage(qrImg, 0, 0, settings.size, settings.size);
+        ctx.drawImage(qrCanvas, 0, 0, settings.size, settings.size);
       }
 
       // Draw center logo if present
@@ -697,6 +841,21 @@ function App() {
         ctx.drawImage(logoImg, x, y, logoWidth, logoHeight);
       }
 
+      // Draw subtle text watermark overlay if present
+      if (settings.watermarkText) {
+        ctx.save();
+        ctx.globalAlpha = settings.watermarkOpacity !== undefined ? settings.watermarkOpacity : 0.3;
+        ctx.fillStyle = settings.fgColor;
+        const fontSize = Math.max(10, Math.floor(settings.size * 0.04));
+        ctx.font = `bold ${fontSize}px "Inter", sans-serif`;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'bottom';
+        const x = finalWidth - (hasFrame ? framePadding + 8 : 8);
+        const y = hasFrame ? framePadding + settings.size - 8 : finalHeight - 8;
+        ctx.fillText(settings.watermarkText, x, y);
+        ctx.restore();
+      }
+
       setQrDataUrl(canvas.toDataURL());
 
       // Wrap SVG inside frame if present
@@ -721,6 +880,25 @@ function App() {
   </g>
   <text x="${finalSvgWidth / 2}" y="${qrSize + padding + (bottom / 2)}" fill="${settings.bgColor}" font-family="system-ui, -apple-system, sans-serif" font-weight="bold" font-size="${fontSize}" text-anchor="middle" dominant-baseline="central">${frameText}</text>
 </svg>`;
+      }
+
+      // Append watermark to SVG if present
+      if (settings.watermarkText) {
+        const isFrame = settings.frame && settings.frame !== 'none';
+        const opacity = settings.watermarkOpacity !== undefined ? settings.watermarkOpacity : 0.3;
+        const viewBoxMatch = svg.match(/viewBox="0 0 (\d+) (\d+)"/);
+        const viewW = viewBoxMatch ? parseInt(viewBoxMatch[1]) : 41;
+        const viewH = viewBoxMatch ? parseInt(viewBoxMatch[2]) : 41;
+        
+        const fontSize = Math.max(1.2, Math.floor(viewW * 0.04));
+        const padding = isFrame ? (Math.max(16, Math.floor(settings.size * 0.08)) * (viewW / finalWidth)) : 2;
+        const xVal = viewW - padding;
+        const yVal = isFrame ? (viewW + padding) : viewH - 2;
+        
+        const svgWatermark = `
+  <text x="${xVal}" y="${yVal}" fill="${settings.fgColor}" opacity="${opacity}" font-family="system-ui, -apple-system, sans-serif" font-weight="bold" font-size="${fontSize}" text-anchor="end" dominant-baseline="auto">${settings.watermarkText}</text>`;
+        
+        svg = svg.replace(/<\/svg>$/, `${svgWatermark}</svg>`);
       }
 
       setQrSvg(svg);
@@ -1098,13 +1276,36 @@ function App() {
           errorCorrectionLevel: settings.errorCorrection,
           margin: settings.margin,
           color: {
-            dark: settings.fgColor,
-            light: settings.transparentBg ? 'transparent' : settings.bgColor,
+            dark: '#000000',
+            light: 'transparent',
           },
           width: settings.size,
         };
 
         let dataUrl = await QRCode.toDataURL(data, options);
+
+        // Apply gradient using an offscreen canvas
+        const itemCanvas = document.createElement('canvas');
+        itemCanvas.width = settings.size;
+        itemCanvas.height = settings.size;
+        const itemCtx = itemCanvas.getContext('2d')!;
+        
+        const qrImg = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error('Failed to load batch item image'));
+          img.src = dataUrl;
+        });
+        
+        itemCtx.drawImage(qrImg, 0, 0, settings.size, settings.size);
+        itemCtx.globalCompositeOperation = 'source-in';
+        const grad = itemCtx.createLinearGradient(0, 0, settings.size, settings.size);
+        grad.addColorStop(0, settings.fgColor);
+        grad.addColorStop(1, settings.fgColorEnd || settings.fgColor);
+        itemCtx.fillStyle = grad;
+        itemCtx.fillRect(0, 0, settings.size, settings.size);
+        
+        dataUrl = itemCanvas.toDataURL();
 
         if (label || logoUrl) {
           try {
@@ -1123,6 +1324,36 @@ function App() {
           }
         }
 
+        if (settings.watermarkText) {
+          try {
+            const finalImg = await new Promise<HTMLImageElement>((resolve, reject) => {
+              const img = new Image();
+              img.onload = () => resolve(img);
+              img.onerror = () => reject(new Error('Failed to load final QR for watermark'));
+              img.src = dataUrl;
+            });
+            const waterCanvas = document.createElement('canvas');
+            waterCanvas.width = finalImg.width;
+            waterCanvas.height = finalImg.height;
+            const waterCtx = waterCanvas.getContext('2d')!;
+            
+            waterCtx.drawImage(finalImg, 0, 0);
+            waterCtx.save();
+            waterCtx.globalAlpha = settings.watermarkOpacity !== undefined ? settings.watermarkOpacity : 0.3;
+            waterCtx.fillStyle = settings.fgColor;
+            const fontSize = Math.max(10, Math.floor(settings.size * 0.04));
+            waterCtx.font = `bold ${fontSize}px "Inter", sans-serif`;
+            waterCtx.textAlign = 'right';
+            waterCtx.textBaseline = 'bottom';
+            waterCtx.fillText(settings.watermarkText, finalImg.width - 8, finalImg.height - 8);
+            waterCtx.restore();
+            
+            dataUrl = waterCanvas.toDataURL();
+          } catch (waterErr) {
+            console.warn('Failed to draw watermark for QR batch item:', waterErr);
+          }
+        }
+
         const base64 = dataUrl.split(',')[1];
         zip.file(`${filename?.trim() || `qr-${item.row}`}.png`, base64, { base64: true });
       } catch (err) {
@@ -1136,10 +1367,23 @@ function App() {
       }
     }
 
+    const zipFilename = `qrcodes-${Date.now()}.zip`;
     const blob = await zip.generateAsync({ type: 'blob' });
+
+    // Save batch log to IndexedDB
+    const newLog: BatchLog = {
+      id: Date.now().toString(),
+      timestamp: Date.now(),
+      rowCount: total,
+      filename: zipFilename,
+      blob,
+    };
+    await saveBatchLog(newLog);
+    await loadBatchLogs();
+
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.download = 'qrcodes.zip';
+    link.download = zipFilename;
     link.href = url;
     link.click();
     URL.revokeObjectURL(url);
@@ -1601,6 +1845,15 @@ function App() {
             >
               Generate & Download {batchItems.filter(i => i.isValid).length} Valid QR Codes
             </button>
+
+            <button
+              type="button"
+              onClick={() => setShowBatchHistoryModal(true)}
+              className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 transition-colors font-medium shadow-sm flex items-center justify-center gap-2"
+            >
+              <History size={16} />
+              {translations[language].viewBatchHistory}
+            </button>
           </div>
         );
       case 'analytics': {
@@ -1911,6 +2164,7 @@ function App() {
                             setSettings(prev => ({
                               ...prev,
                               fgColor: palette.fgColor,
+                              fgColorEnd: palette.fgColorEnd || palette.fgColor,
                               bgColor: palette.bgColor,
                               transparentBg: false,
                             }));
@@ -1933,26 +2187,49 @@ function App() {
 
                   {/* Custom color manual input drawer */}
                   {showCustomColors && (
-                    <div className="grid grid-cols-2 gap-4 mt-3 bg-gray-50 dark:bg-gray-900/30 p-3 rounded-xl border border-gray-100 dark:border-gray-800 transition-all">
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1.5">
-                          Foreground
-                        </label>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="color"
-                            value={settings.fgColor}
-                            onChange={e => setSettings(prev => ({ ...prev, fgColor: e.target.value }))}
-                            className="w-8 h-8 rounded-lg cursor-pointer flex-shrink-0 border dark:border-gray-700"
-                          />
-                          <input
-                            type="text"
-                            value={settings.fgColor}
-                            onChange={e => setSettings(prev => ({ ...prev, fgColor: e.target.value }))}
-                            className={inputClass + ' text-xs py-1 px-2'}
-                          />
+                    <div className="space-y-3 mt-3 bg-gray-50 dark:bg-gray-900/30 p-3 rounded-xl border border-gray-100 dark:border-gray-800 transition-all">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1.5">
+                            {translations[language].fgColorStart}
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              value={settings.fgColor}
+                              onChange={e => setSettings(prev => ({ ...prev, fgColor: e.target.value }))}
+                              className="w-8 h-8 rounded-lg cursor-pointer flex-shrink-0 border dark:border-gray-700"
+                            />
+                            <input
+                              type="text"
+                              value={settings.fgColor}
+                              onChange={e => setSettings(prev => ({ ...prev, fgColor: e.target.value }))}
+                              className={inputClass + ' text-xs py-1 px-2 w-full'}
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1.5">
+                            {translations[language].fgColorEnd}
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              value={settings.fgColorEnd || settings.fgColor}
+                              onChange={e => setSettings(prev => ({ ...prev, fgColorEnd: e.target.value }))}
+                              className="w-8 h-8 rounded-lg cursor-pointer flex-shrink-0 border dark:border-gray-700"
+                            />
+                            <input
+                              type="text"
+                              value={settings.fgColorEnd || settings.fgColor}
+                              onChange={e => setSettings(prev => ({ ...prev, fgColorEnd: e.target.value }))}
+                              className={inputClass + ' text-xs py-1 px-2 w-full'}
+                            />
+                          </div>
                         </div>
                       </div>
+
                       <div>
                         <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1.5">
                           Background
@@ -1969,7 +2246,7 @@ function App() {
                             type="text"
                             value={settings.bgColor}
                             onChange={e => setSettings(prev => ({ ...prev, bgColor: e.target.value }))}
-                            className={inputClass + ' text-xs py-1 px-2'}
+                            className={inputClass + ' text-xs py-1 px-2 w-full'}
                             disabled={settings.transparentBg}
                           />
                         </div>
@@ -2064,6 +2341,45 @@ function App() {
                       />
                     </div>
                   )}
+                </div>
+
+                {/* Watermark Section */}
+                <div className="border-t border-gray-100 dark:border-gray-700/50 pt-4">
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2 flex items-center gap-1.5">
+                    <span className="w-1.5 h-3.5 bg-indigo-500 rounded-full" />
+                    {translations[language].watermarkHeader}
+                  </h3>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1.5">
+                        {translations[language].watermarkTextLabel}
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Confidential, Verified"
+                        value={settings.watermarkText || ''}
+                        onChange={e => setSettings(prev => ({ ...prev, watermarkText: e.target.value }))}
+                        className={inputClass + ' text-xs py-1.5 px-3 w-full'}
+                      />
+                    </div>
+                    {settings.watermarkText && (
+                      <div>
+                        <div className="flex justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
+                          <span>{translations[language].watermarkOpacityLabel}</span>
+                          <span>{Math.round((settings.watermarkOpacity !== undefined ? settings.watermarkOpacity : 0.3) * 100)}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.1"
+                          max="1.0"
+                          step="0.05"
+                          value={settings.watermarkOpacity !== undefined ? settings.watermarkOpacity : 0.3}
+                          onChange={e => setSettings(prev => ({ ...prev, watermarkOpacity: parseFloat(e.target.value) }))}
+                          className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -2381,6 +2697,79 @@ function App() {
                   className="mt-4 w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   Save
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Batch Download History Modal */}
+        {showBatchHistoryModal && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md overflow-hidden">
+              <div className="flex items-center justify-between p-4 border-b dark:border-gray-700">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                  <History size={20} className="text-indigo-500" />
+                  {translations[language].batchHistoryTitle}
+                </h3>
+                <button
+                  onClick={() => setShowBatchHistoryModal(false)}
+                  className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+                >
+                  <X size={20} className="text-gray-500" />
+                </button>
+              </div>
+              <div className="p-4 max-h-[400px] overflow-y-auto space-y-3">
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {translations[language].batchRowLimit}
+                </p>
+                {batchLogs.length === 0 ? (
+                  <div className="py-8 text-center text-gray-400 dark:text-gray-500">
+                    {translations[language].noBatchHistory}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {batchLogs.slice(0, 5).map(log => (
+                      <div
+                        key={log.id}
+                        className="p-3 bg-gray-50 dark:bg-gray-900/40 border border-gray-100 dark:border-gray-800 rounded-xl flex items-center justify-between gap-3"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate" title={log.filename}>
+                            {log.filename}
+                          </p>
+                          <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
+                            <span>{new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                            <span>•</span>
+                            <span>{log.rowCount} {translations[language].batchItemsCount}</span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const url = URL.createObjectURL(log.blob);
+                            const link = document.createElement('a');
+                            link.download = log.filename;
+                            link.href = url;
+                            link.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-xs rounded-lg shadow-sm transition-colors flex items-center gap-1 flex-shrink-0"
+                        >
+                          <Download size={14} />
+                          {translations[language].downloadZip}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="p-4 bg-gray-50 dark:bg-gray-800/50 border-t dark:border-gray-700 flex justify-end">
+                <button
+                  onClick={() => setShowBatchHistoryModal(false)}
+                  className="px-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+                >
+                  {translations[language].close}
                 </button>
               </div>
             </div>
