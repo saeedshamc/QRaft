@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import JSZip from 'jszip';
@@ -23,13 +23,14 @@ import {
   Check,
   AlertCircle,
   X,
-  ChevronDown,
   Moon,
   Sun,
   Share2,
+  BarChart3,
+  Globe,
 } from 'lucide-react';
 
-type ContentType = 'url' | 'text' | 'email' | 'phone' | 'sms' | 'wifi' | 'vcard' | 'location' | 'calendar' | 'batch';
+type ContentType = 'url' | 'text' | 'email' | 'phone' | 'sms' | 'wifi' | 'vcard' | 'location' | 'calendar' | 'batch' | 'analytics';
 
 interface QRSettings {
   errorCorrection: 'L' | 'M' | 'Q' | 'H';
@@ -41,6 +42,7 @@ interface QRSettings {
   dotStyle: 'square' | 'rounded' | 'dots';
   logo: string | null;
   logoSize: number;
+  frame: 'none' | 'scan_me' | 'website' | 'contact';
 }
 
 interface HistoryItem {
@@ -50,6 +52,7 @@ interface HistoryItem {
   settings: QRSettings;
   timestamp: number;
   label: string;
+  notes?: string;
 }
 
 interface Preset {
@@ -65,7 +68,7 @@ interface FormData {
   phone: string;
   sms: { phone: string; message: string };
   wifi: { ssid: string; password: string; encryption: 'WPA' | 'WEP' | 'None'; hidden: boolean };
-  vcard: { firstName: string; lastName: string; phone: string; email: string; org: string; url: string };
+  vcard: { firstName: string; lastName: string; phone: string; email: string; org: string; url: string; photo?: string };
   location: { lat: string; lng: string; address: string };
   calendar: { title: string; start: string; end: string; location: string; description: string };
 }
@@ -77,7 +80,7 @@ const defaultFormData: FormData = {
   phone: '+1234567890',
   sms: { phone: '+1234567890', message: 'Hello!' },
   wifi: { ssid: 'MyNetwork', password: 'password123', encryption: 'WPA', hidden: false },
-  vcard: { firstName: 'John', lastName: 'Doe', phone: '+1234567890', email: 'john@example.com', org: 'Company', url: 'https://example.com' },
+  vcard: { firstName: 'John', lastName: 'Doe', phone: '+1234567890', email: 'john@example.com', org: 'Company', url: 'https://example.com', photo: '' },
   location: { lat: '40.7128', lng: '-74.0060', address: 'New York City' },
   calendar: { title: 'Meeting', start: '', end: '', location: 'Office', description: 'Team meeting' },
 };
@@ -92,6 +95,7 @@ const defaultSettings: QRSettings = {
   dotStyle: 'square',
   logo: null,
   logoSize: 20,
+  frame: 'none',
 };
 
 const contentTypes: { id: ContentType; label: string; icon: React.ReactNode }[] = [
@@ -105,6 +109,7 @@ const contentTypes: { id: ContentType; label: string; icon: React.ReactNode }[] 
   { id: 'location', label: 'Location', icon: <MapPin size={16} /> },
   { id: 'calendar', label: 'Event', icon: <Calendar size={16} /> },
   { id: 'batch', label: 'Batch', icon: <FileSpreadsheet size={16} /> },
+  { id: 'analytics', label: 'Analytics', icon: <BarChart3 size={16} /> },
 ];
 
 const errorCorrectionLevels = [
@@ -112,6 +117,254 @@ const errorCorrectionLevels = [
   { value: 'M', label: 'Medium (15%)', desc: 'Up to 15% damage tolerance' },
   { value: 'Q', label: 'Quartile (25%)', desc: 'Up to 25% damage tolerance' },
   { value: 'H', label: 'High (30%)', desc: 'Up to 30% damage tolerance' },
+];
+
+interface BatchItem {
+  row: number;
+  content: string;
+  filename: string;
+  label?: string;
+  logoUrl?: string;
+  isValid: boolean;
+  error?: string;
+  type: 'url' | 'text' | 'invalid';
+}
+
+const drawQRWithLabelAndLogo = (
+  dataUrl: string,
+  label: string | undefined,
+  logoUrl: string | undefined,
+  size: number,
+  fgColor: string,
+  bgColor: string,
+  transparentBg: boolean,
+  logoSizePercent: number = 20
+): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const qrImg = new Image();
+    qrImg.crossOrigin = 'anonymous';
+    qrImg.onload = async () => {
+      try {
+        const canvas = document.createElement('canvas');
+        const fontSize = Math.max(12, Math.round(size * 0.06));
+        const padding = Math.max(8, Math.round(size * 0.04));
+        const textHeight = label ? (fontSize + padding * 2) : 0;
+        
+        canvas.width = size;
+        canvas.height = size + textHeight;
+        
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(dataUrl);
+          return;
+        }
+        
+        // Fill background
+        if (!transparentBg) {
+          ctx.fillStyle = bgColor;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        } else {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+        
+        // Draw the QR code
+        ctx.drawImage(qrImg, 0, 0, size, size);
+        
+        // Draw center logo if present
+        if (logoUrl) {
+          try {
+            const logoImg = await new Promise<HTMLImageElement>((res, rej) => {
+              const img = new Image();
+              img.crossOrigin = 'anonymous';
+              img.onload = () => res(img);
+              img.onerror = () => rej(new Error('Failed to load logo image'));
+              img.src = logoUrl;
+            });
+            
+            const logoWidth = size * (logoSizePercent / 100);
+            const logoHeight = logoImg.height * (logoWidth / logoImg.width);
+            
+            const x = (size - logoWidth) / 2;
+            const y = (size - logoHeight) / 2;
+            
+            // Draw small background border for logo
+            ctx.fillStyle = transparentBg ? '#ffffff' : bgColor;
+            ctx.fillRect(x - 4, y - 4, logoWidth + 8, logoHeight + 8);
+            ctx.drawImage(logoImg, x, y, logoWidth, logoHeight);
+          } catch (logoErr) {
+            console.warn('Failed to load or draw logo in batch QR:', logoErr);
+          }
+        }
+        
+        // Draw text label
+        if (label) {
+          ctx.fillStyle = fgColor;
+          ctx.font = `600 ${fontSize}px system-ui, -apple-system, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          
+          // Draw centered label
+          ctx.fillText(label, size / 2, size + padding + fontSize / 2);
+        }
+        
+        resolve(canvas.toDataURL('image/png'));
+      } catch (err) {
+        reject(err);
+      }
+    };
+    qrImg.onerror = (err) => {
+      reject(err);
+    };
+    qrImg.src = dataUrl;
+  });
+};
+
+const translations = {
+  en: {
+    appTitle: "QR Generator",
+    appSubtitle: "Create custom QR codes",
+    history: "History",
+    presets: "Presets",
+    clear: "Clear",
+    noHistory: "No history yet",
+    savePreset: "Save Preset",
+    noPresets: "No presets saved",
+    close: "Close",
+    url: "URL",
+    text: "Text",
+    email: "Email",
+    phone: "Phone",
+    sms: "SMS",
+    wifi: "Wi-Fi",
+    vcard: "vCard",
+    location: "Location",
+    calendar: "Event",
+    batch: "Batch",
+    analytics: "Analytics",
+    subject: "Subject",
+    body: "Body",
+    message: "Message",
+    ssid: "Network Name (SSID)",
+    password: "Password",
+    encryption: "Encryption",
+    hidden: "Hidden Network",
+    firstName: "First Name",
+    lastName: "Last Name",
+    organization: "Organization",
+    website: "Website",
+    latitude: "Latitude",
+    longitude: "Longitude",
+    address: "Or Address",
+    eventTitle: "Event Title",
+    start: "Start",
+    end: "End",
+    description: "Description",
+    notes: "Notes",
+    addNotesPlaceholder: "Add custom notes/description...",
+    saveNotes: "Save Note",
+    errorCorrection: "Error Correction",
+    complexityMetrics: "QR Complexity Metrics",
+    gridDimensions: "Grid Dimensions",
+    densityLevel: "Density Level",
+    lowDensity: "Low (Highly Scannable)",
+    mediumDensity: "Medium",
+    highDensity: "High (Dense)",
+    highDensityWarning: "High QR Density Warning",
+    highDensityWarningDesc: "With high data density, lowering error correction improves scan reliability. Consider switching to Medium (M) or Low (L).",
+    setToMedium: "Set to Medium (M)",
+    setToLow: "Set to Low (L)",
+    downloadPNG: "Download PNG",
+    downloadSVG: "Download SVG",
+    copySVG: "Copy SVG",
+    copied: "Copied!",
+    scanQR: "Scan QR Code",
+    scanDescription: "Align QR code inside the frame to scan",
+    lightMode: "Light Mode",
+    darkMode: "Dark Mode",
+    historyNotesLabel: "Notes / Description",
+    restore: "Restore",
+    photoUrl: "Photo URL (Base64 or Link)",
+    batchDelayLabel: "Generation Delay (ms)",
+    batchDelayHelp: "Introduces a short pause between generating each code to prevent browser freezing.",
+  },
+  fa: {
+    appTitle: "کد ساز QR",
+    appSubtitle: "کدهای QR سفارشی بسازید",
+    history: "تاریخچه",
+    presets: "تنظیمات ذخیره شده",
+    clear: "پاک کردن",
+    noHistory: "هنوز تاریخچه‌ای ثبت نشده است",
+    savePreset: "ذخیره تنظیمات فعلی",
+    noPresets: "هیچ تنظیماتی ذخیره نشده است",
+    close: "بستن",
+    url: "آدرس اینترنتی (URL)",
+    text: "متن",
+    email: "ایمیل",
+    phone: "تلفن",
+    sms: "پیامک (SMS)",
+    wifi: "وای‌فای (Wi-Fi)",
+    vcard: "کارت ویزیت (vCard)",
+    location: "موقعیت مکانی",
+    calendar: "رویداد",
+    batch: "سازنده دسته جمعی",
+    analytics: "آمار و ارقام",
+    subject: "موضوع",
+    body: "متن ایمیل",
+    message: "متن پیام",
+    ssid: "نام شبکه (SSID)",
+    password: "رمز عبور",
+    encryption: "امنیت رمزگذاری",
+    hidden: "شبکه پنهان",
+    firstName: "نام",
+    lastName: "نام خانوادگی",
+    organization: "سازمان / شرکت",
+    website: "وب‌سایت",
+    latitude: "عرض جغرافیایی",
+    longitude: "طول جغرافیایی",
+    address: "یا آدرس فیزیکی",
+    eventTitle: "عنوان رویداد",
+    start: "زمان شروع",
+    end: "زمان پایان",
+    description: "توضیحات",
+    notes: "یادداشت‌ها",
+    addNotesPlaceholder: "یادداشت یا توضیحات سفارشی اضافه کنید...",
+    saveNotes: "ذخیره یادداشت",
+    errorCorrection: "تصحیح خطا (Error Correction)",
+    complexityMetrics: "معیارهای پیچیدگی QR",
+    gridDimensions: "ابعاد جدول",
+    densityLevel: "سطح تراکم",
+    lowDensity: "کم (خوانایی بسیار بالا)",
+    mediumDensity: "متوسط",
+    highDensity: "زیاد (متراکم)",
+    highDensityWarning: "هشدار تراکم بالای QR",
+    highDensityWarningDesc: "با تراکم بالای داده‌ها، کاهش سطح تصحیح خطا اسکن شدن کد را آسان‌تر می‌کند. گزینه متوسط (M) یا کم (L) را امتحان کنید.",
+    setToMedium: "تنظیم روی متوسط (M)",
+    setToLow: "تنظیم روی کم (L)",
+    downloadPNG: "دانلود PNG",
+    downloadSVG: "دانلود SVG",
+    copySVG: "کپی SVG",
+    copied: "کپی شد!",
+    scanQR: "اسکن کد QR",
+    scanDescription: "کد QR را داخل قاب قرار دهید تا اسکن شود",
+    lightMode: "حالت روز",
+    darkMode: "حالت شب",
+    historyNotesLabel: "یادداشت / توضیحات",
+    restore: "بازیابی",
+    photoUrl: "آدرس عکس (لینک یا کد Base64)",
+    batchDelayLabel: "تاخیر ساخت (میلی‌ثانیه)",
+    batchDelayHelp: "برای جلوگیری از هنگ کردن مرورگر، یک وقفه کوتاه بین ساخت هر کد قرار می‌دهد.",
+  }
+};
+
+const colorPalettes = [
+  { id: 'classic', name: 'Classic Dark', fgColor: '#000000', bgColor: '#ffffff' },
+  { id: 'midnight', name: 'Midnight Slate', fgColor: '#1e293b', bgColor: '#f8fafc' },
+  { id: 'ocean', name: 'Ocean Blue', fgColor: '#1d4ed8', bgColor: '#f0f9ff' },
+  { id: 'emerald', name: 'Forest Emerald', fgColor: '#047857', bgColor: '#f0fdf4' },
+  { id: 'sunset', name: 'Sunset Rose', fgColor: '#be123c', bgColor: '#fff1f2' },
+  { id: 'lavender', name: 'Purple Dream', fgColor: '#6d28d9', bgColor: '#faf5ff' },
+  { id: 'cyberpunk', name: 'Cyber Neon', fgColor: '#06b6d4', bgColor: '#0f172a' },
+  { id: 'chocolate', name: 'Warm Mocha', fgColor: '#78350f', bgColor: '#fdf8f6' },
 ];
 
 function App() {
@@ -127,15 +380,49 @@ function App() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [copied, setCopied] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('qr-dark-mode');
+    if (saved !== null) {
+      return saved === 'true';
+    }
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+  const [language, setLanguage] = useState<'en' | 'fa'>(() => {
+    const saved = localStorage.getItem('qr-language');
+    if (saved === 'en' || saved === 'fa') return saved;
+    return 'en';
+  });
   const [showScanner, setShowScanner] = useState(false);
   const [scannerResult, setScannerResult] = useState<string | null>(null);
   const [batchProgress, setBatchProgress] = useState(0);
+  const [batchDelay, setBatchDelay] = useState<number>(() => {
+    const saved = localStorage.getItem('qr-batch-delay');
+    return saved ? parseInt(saved, 10) : 50;
+  });
   const [csvData, setCsvData] = useState<string>('');
   const [moduleCount, setModuleCount] = useState(0);
   const [dataCapacity, setDataCapacity] = useState(0);
+  const [qrVersion, setQrVersion] = useState<number>(1);
   const [newPresetName, setNewPresetName] = useState('');
   const [showPresetModal, setShowPresetModal] = useState(false);
+
+  // New state hooks
+  const [activePaletteId, setActivePaletteId] = useState<string>('classic');
+  const [showCustomColors, setShowCustomColors] = useState<boolean>(false);
+  const [batchItems, setBatchItems] = useState<BatchItem[]>([]);
+  const [csvError, setCsvError] = useState<string | null>(null);
+  const [analytics, setAnalytics] = useState<Record<string, number>>({
+    url: 4,
+    text: 2,
+    wifi: 1,
+    vcard: 0,
+    email: 0,
+    phone: 1,
+    sms: 0,
+    location: 0,
+    calendar: 0,
+    batch: 0,
+  });
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -161,6 +448,38 @@ function App() {
     localStorage.setItem('qr-presets', JSON.stringify(presets));
   }, [presets]);
 
+  // Sync dark mode with documentElement and localStorage
+  useEffect(() => {
+    localStorage.setItem('qr-dark-mode', String(darkMode));
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [darkMode]);
+
+  // Sync language with documentElement and localStorage
+  useEffect(() => {
+    localStorage.setItem('qr-language', language);
+    document.documentElement.dir = language === 'fa' ? 'rtl' : 'ltr';
+    document.documentElement.lang = language;
+  }, [language]);
+
+  // Sync batch delay with localStorage
+  useEffect(() => {
+    localStorage.setItem('qr-batch-delay', String(batchDelay));
+  }, [batchDelay]);
+
+  const t = (key: keyof typeof translations['en']): string => {
+    return translations[language][key] || translations['en'][key];
+  };
+
+  const updateHistoryNotes = (id: string, notes: string) => {
+    setHistory(prev =>
+      prev.map(item => (item.id === id ? { ...item, notes } : item))
+    );
+  };
+
   // Parse URL params for shareable link
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -183,7 +502,9 @@ function App() {
       if (settingsParam) {
         try {
           setSettings(JSON.parse(decodeURIComponent(settingsParam)));
-        } catch {}
+        } catch (e) {
+          console.warn('Failed to parse settingsParam:', e);
+        }
       }
     }
   }, []);
@@ -191,60 +512,77 @@ function App() {
   // Generate QR content string
   const getQRContent = useCallback((type: ContentType, data: FormData): string => {
     switch (type) {
-      case 'url':
+      case 'url': {
         let url = data.url.trim();
         if (!/^https?:\/\//i.test(url)) {
           url = 'https://' + url;
         }
         return url;
+      }
       case 'text':
         return data.text;
-      case 'email':
+      case 'email': {
         const mailto = new URLSearchParams();
         if (data.email.subject) mailto.set('subject', data.email.subject);
         if (data.email.body) mailto.set('body', data.email.body);
         return `mailto:${data.email.to}?${mailto.toString()}`;
+      }
       case 'phone':
         return `tel:${data.phone}`;
       case 'sms':
         return `smsto:${data.sms.phone}?body=${encodeURIComponent(data.sms.message)}`;
-      case 'wifi':
+      case 'wifi': {
         const wifiStr = `WIFI:T:${data.wifi.encryption};S:${data.wifi.ssid};P:${data.wifi.password};H:${data.wifi.hidden ? 'true' : 'false'};;`;
         return wifiStr;
-      case 'vcard':
-        return `BEGIN:VCARD
-VERSION:3.0
-N:${data.vcard.lastName};${data.vcard.firstName}
-FN:${data.vcard.firstName} ${data.vcard.lastName}
-TEL:${data.vcard.phone}
-EMAIL:${data.vcard.email}
-ORG:${data.vcard.org}
-URL:${data.vcard.url}
-END:VCARD`;
-      case 'location':
+      }
+      case 'vcard': {
+        let photoLine = '';
+        if (data.vcard.photo) {
+          const trimmedPhoto = data.vcard.photo.trim();
+          if (trimmedPhoto.startsWith('data:image/')) {
+            const match = trimmedPhoto.match(/data:image\/(\w+);base64,(.+)/);
+            if (match) {
+              const type = match[1].toUpperCase();
+              const base64 = match[2];
+              photoLine = `\nPHOTO;ENCODING=b;TYPE=${type}:${base64}`;
+            } else {
+              photoLine = `\nPHOTO;VALUE=URI:${trimmedPhoto}`;
+            }
+          } else if (trimmedPhoto) {
+            photoLine = `\nPHOTO;VALUE=URI:${trimmedPhoto}`;
+          }
+        }
+        return `BEGIN:VCARD\nVERSION:3.0\nN:${data.vcard.lastName};${data.vcard.firstName}\nFN:${data.vcard.firstName} ${data.vcard.lastName}\nTEL:${data.vcard.phone}\nEMAIL:${data.vcard.email}\nORG:${data.vcard.org}\nURL:${data.vcard.url}${photoLine}\nEND:VCARD`;
+      }
+      case 'location': {
         const lat = parseFloat(data.location.lat);
         const lng = parseFloat(data.location.lng);
         if (!isNaN(lat) && !isNaN(lng)) {
           return `geo:${lat},${lng}`;
         }
         return `geo:0,0?q=${encodeURIComponent(data.location.address)}`;
-      case 'calendar':
+      }
+      case 'calendar': {
         const formatDate = (d: string) => {
           if (!d) return '';
           const date = new Date(d);
           return date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
         };
-        return `BEGIN:VEVENT
-DTSTART:${formatDate(data.calendar.start)}
-DTEND:${formatDate(data.calendar.end)}
-SUMMARY:${data.calendar.title}
-LOCATION:${data.calendar.location}
-DESCRIPTION:${data.calendar.description}
-END:VEVENT`;
+        return `BEGIN:VEVENT\nDTSTART:${formatDate(data.calendar.start)}\nDTEND:${formatDate(data.calendar.end)}\nSUMMARY:${data.calendar.title}\nLOCATION:${data.calendar.location}\nDESCRIPTION:${data.calendar.description}\nEND:VEVENT`;
+      }
       default:
         return '';
     }
   }, []);
+
+  const getFrameText = (frame: QRSettings['frame']): string => {
+    switch (frame) {
+      case 'scan_me': return 'SCAN ME';
+      case 'website': return 'VISIT WEBSITE';
+      case 'contact': return 'ADD CONTACT';
+      default: return '';
+    }
+  };
 
   // Debounced QR generation
   useEffect(() => {
@@ -257,7 +595,7 @@ END:VEVENT`;
 
   const generateQR = useCallback(async () => {
     const content = getQRContent(contentType, formData);
-    if (!content || contentType === 'batch') {
+    if (!content || contentType === 'batch' || contentType === 'analytics') {
       setQrDataUrl('');
       setQrSvg('');
       return;
@@ -279,47 +617,136 @@ END:VEVENT`;
 
       // Generate PNG data URL
       const dataUrl = await QRCode.toDataURL(content, options);
-      setQrDataUrl(dataUrl);
 
       // Generate SVG
-      const svg = await QRCode.toString(content, {
+      let svg = await QRCode.toString(content, {
         ...options,
         type: 'svg',
       });
+
+      // Frame and logo rendering on canvas
+      const hasFrame = settings.frame && settings.frame !== 'none';
+      const framePadding = Math.max(16, Math.floor(settings.size * 0.08));
+      const bottomArea = Math.max(48, Math.floor(settings.size * 0.22));
+
+      const finalWidth = hasFrame ? settings.size + (framePadding * 2) : settings.size;
+      const finalHeight = hasFrame ? settings.size + framePadding + bottomArea : settings.size;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = finalWidth;
+      canvas.height = finalHeight;
+      const ctx = canvas.getContext('2d')!;
+
+      // Load base QR image
+      const qrImg = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Failed to load QR image'));
+        img.src = dataUrl;
+      });
+
+      if (hasFrame) {
+        // Draw frame background using the foreground color
+        ctx.fillStyle = settings.fgColor;
+        ctx.fillRect(0, 0, finalWidth, finalHeight);
+
+        // Draw inner QR background container
+        ctx.fillStyle = settings.bgColor;
+        ctx.fillRect(framePadding, framePadding, settings.size, settings.size);
+
+        // Draw QR code inside the container
+        ctx.drawImage(qrImg, framePadding, framePadding, settings.size, settings.size);
+
+        // Draw Frame Label Text
+        const frameText = getFrameText(settings.frame);
+        ctx.fillStyle = settings.bgColor === '#ffffff' ? '#ffffff' : settings.bgColor;
+        ctx.font = `bold ${Math.max(14, Math.floor(settings.size * 0.065))}px "Inter", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(frameText, finalWidth / 2, settings.size + framePadding + (bottomArea / 2));
+      } else {
+        // No frame - draw plain QR background and QR code
+        if (!settings.transparentBg) {
+          ctx.fillStyle = settings.bgColor;
+          ctx.fillRect(0, 0, settings.size, settings.size);
+        }
+        ctx.drawImage(qrImg, 0, 0, settings.size, settings.size);
+      }
+
+      // Draw center logo if present
+      if (settings.logo) {
+        const logoImg = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error('Failed to load logo image'));
+          img.src = settings.logo!;
+        });
+
+        const logoWidth = settings.size * (settings.logoSize / 100);
+        const logoHeight = logoImg.height * (logoWidth / logoImg.width);
+
+        const qrX = hasFrame ? framePadding : 0;
+        const qrY = hasFrame ? framePadding : 0;
+
+        const x = qrX + (settings.size - logoWidth) / 2;
+        const y = qrY + (settings.size - logoHeight) / 2;
+
+        // Draw small background border for logo
+        ctx.fillStyle = settings.bgColor;
+        ctx.fillRect(x - 4, y - 4, logoWidth + 8, logoHeight + 8);
+        ctx.drawImage(logoImg, x, y, logoWidth, logoHeight);
+      }
+
+      setQrDataUrl(canvas.toDataURL());
+
+      // Wrap SVG inside frame if present
+      if (hasFrame) {
+        const viewBoxMatch = svg.match(/viewBox="0 0 (\d+) (\d+)"/);
+        const qrSize = viewBoxMatch ? parseInt(viewBoxMatch[1]) : 41;
+
+        const padding = 3;
+        const bottom = 9;
+        const finalSvgWidth = qrSize + (padding * 2);
+        const finalSvgHeight = qrSize + padding + bottom;
+        const frameText = getFrameText(settings.frame);
+        const fontSize = Math.max(2, Math.floor(qrSize * 0.08));
+
+        const innerContent = svg.replace(/<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+
+        svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${finalSvgWidth} ${finalSvgHeight}" width="100%" height="100%">
+  <rect width="${finalSvgWidth}" height="${finalSvgHeight}" fill="${settings.fgColor}"/>
+  <rect x="${padding}" y="${padding}" width="${qrSize}" height="${qrSize}" fill="${settings.bgColor}"/>
+  <g transform="translate(${padding}, ${padding})">
+    ${innerContent}
+  </g>
+  <text x="${finalSvgWidth / 2}" y="${qrSize + padding + (bottom / 2)}" fill="${settings.bgColor}" font-family="system-ui, -apple-system, sans-serif" font-weight="bold" font-size="${fontSize}" text-anchor="middle" dominant-baseline="central">${frameText}</text>
+</svg>`;
+      }
+
       setQrSvg(svg);
 
-      // Calculate module count (simplified estimation)
-      const version = Math.ceil(content.length / 17) + 1;
-      const modules = 17 + version * 4;
+      // Estimate or calculate metrics
+      let calculatedVersion = 1;
+      try {
+        const qrCreator = QRCode as unknown as { create: (c: string, o: { errorCorrectionLevel: string }) => { version: number } };
+        const qrCodeObj = qrCreator.create(content, { errorCorrectionLevel: settings.errorCorrection });
+        calculatedVersion = qrCodeObj.version || 1;
+      } catch {
+        calculatedVersion = Math.ceil(content.length / 17) + 1;
+      }
+      setQrVersion(calculatedVersion);
+      const modules = 17 + calculatedVersion * 4;
       setModuleCount(modules);
       setDataCapacity(Math.pow(2, Math.ceil(Math.log2(content.length + 1))));
 
-      // Add logo overlay if present
-      if (settings.logo && dataUrl) {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          const img = new Image();
-          img.onload = () => {
-            canvas.width = settings.size;
-            canvas.height = settings.size;
-            ctx.drawImage(img, 0, 0);
+      // Record successful generation in mock analytics
+      setAnalytics(prev => ({
+        ...prev,
+        [contentType]: (prev[contentType] || 0) + 1,
+      }));
 
-            const logo = new Image();
-            logo.onload = () => {
-              const logoWidth = settings.size * (settings.logoSize / 100);
-              const logoHeight = logo.height * (logoWidth / logo.width);
-              const x = (settings.size - logoWidth) / 2;
-              const y = (settings.size - logoHeight) / 2;
-              ctx.drawImage(logo, x, y, logoWidth, logoHeight);
-              setQrDataUrl(canvas.toDataURL());
-            };
-            logo.src = settings.logo!;
-          };
-          img.src = dataUrl;
-        }
-      }
-    } catch {
+    } catch (err) {
+      console.error(err);
       setError('QR is too dense. Lower error correction or shorten content.');
       setQrDataUrl('');
       setQrSvg('');
@@ -330,17 +757,20 @@ END:VEVENT`;
 
   const handleExportPNG = async () => {
     if (!qrDataUrl) return;
-    const scale = window.devicePixelRatio * 2;
-    const canvas = document.createElement('canvas');
-    canvas.width = settings.size * scale;
-    canvas.height = settings.size * scale;
-    const ctx = canvas.getContext('2d')!;
-
     const img = new Image();
     img.onload = () => {
+      const scale = 2; // Fixed high-quality upscale factor
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      const ctx = canvas.getContext('2d')!;
+      
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       const link = document.createElement('a');
-      link.download = 'qrcode.png';
+      link.download = `qrcode-${settings.frame || 'default'}.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
     };
@@ -361,10 +791,17 @@ END:VEVENT`;
   const handleCopy = async () => {
     if (!qrDataUrl) return;
     try {
-      const response = await fetch(qrDataUrl);
-      const blob = await response.blob();
+      const parts = qrDataUrl.split(',');
+      const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/png';
+      const bstr = atob(parts[1]);
+      let n = bstr.length;
+      const u8arr = new Uint8Array(n);
+      while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+      }
+      const blob = new Blob([u8arr], { type: mime });
       await navigator.clipboard.write([
-        new ClipboardItem({ 'image/png': blob }),
+        new ClipboardItem({ [mime]: blob }),
       ]);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
@@ -546,17 +983,115 @@ END:VEVENT`;
     }
   };
 
+  const handleDownloadSampleCSV = () => {
+    const csvContent = 'content,filename,label,logo_url\nhttps://example.com,example-site,My Site,https://api.iconify.design/logos:chrome.svg\nHello World,hello-text,Hello,https://api.iconify.design/logos:github-icon.svg\nhttps://google.com,google-search,Google,\n';
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'qr_code_batch_sample.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // CSV auto-validation whenever csvData changes
+  useEffect(() => {
+    if (!csvData) {
+      setBatchItems([]);
+      setCsvError(null);
+      return;
+    }
+
+    const lines = csvData.split('\n');
+    const validatedItems: BatchItem[] = [];
+    let invalidCount = 0;
+
+    lines.forEach((line, index) => {
+      const trimmed = line.trim();
+      if (!trimmed) return; // Skip empty rows
+
+      // Robust CSV parsing that supports quotes, embedded commas, and spaces
+      let parts: string[] = [];
+      try {
+        let current = '';
+        let inQuotes = false;
+        for (let i = 0; i < trimmed.length; i++) {
+          const char = trimmed[i];
+          if (char === '"') {
+            inQuotes = !inQuotes;
+          } else if (char === ',' && !inQuotes) {
+            parts.push(current.trim());
+            current = '';
+          } else {
+            current += char;
+          }
+        }
+        parts.push(current.trim());
+        parts = parts.map(p => p.replace(/^"|"$/g, '').trim());
+      } catch {
+        parts = trimmed.split(',');
+      }
+
+      const content = parts[0]?.trim() || '';
+      const filename = parts[1]?.trim() || '';
+      const label = parts[2]?.trim() || '';
+      const logoUrl = parts[3]?.trim() || '';
+
+      // Skip header row if it contains 'content'
+      if (index === 0 && content.toLowerCase() === 'content') {
+        return;
+      }
+
+      if (!content) {
+        invalidCount++;
+        validatedItems.push({
+          row: index + 1,
+          content: '',
+          filename,
+          label,
+          logoUrl,
+          isValid: false,
+          error: 'Content column is empty',
+          type: 'invalid',
+        });
+      } else {
+        const isUrl = /^(https?:\/\/)?([\da-z.-]+)\.([a-z.]{2,6})([/\w .-]*)*\/?$/i.test(content);
+        validatedItems.push({
+          row: index + 1,
+          content,
+          filename,
+          label,
+          logoUrl,
+          isValid: true,
+          type: isUrl ? 'url' : 'text',
+        });
+      }
+    });
+
+    setBatchItems(validatedItems);
+
+    if (invalidCount > 0) {
+      setCsvError(`Detected ${invalidCount} invalid row(s). Rows must have non-empty content.`);
+    } else {
+      setCsvError(null);
+    }
+  }, [csvData]);
+
   const generateBatch = async () => {
-    const lines = csvData.split('\n').filter(l => l.trim());
-    if (!lines.length) return;
+    const validItems = batchItems.filter(item => item.isValid);
+    if (!validItems.length) return;
 
     const zip = new JSZip();
-    const total = lines.length;
+    const total = validItems.length;
 
     for (let i = 0; i < total; i++) {
-      const line = lines[i];
-      const [content, filename] = line.split(',');
-      const data = content.trim();
+      const item = validItems[i];
+      const data = item.content;
+      const filename = item.filename;
+      const label = item.label;
+      const logoUrl = item.logoUrl;
 
       try {
         const options: QRCode.QRCodeToFileOptions = {
@@ -569,12 +1104,36 @@ END:VEVENT`;
           width: settings.size,
         };
 
-        const dataUrl = await QRCode.toDataURL(data, options);
+        let dataUrl = await QRCode.toDataURL(data, options);
+
+        if (label || logoUrl) {
+          try {
+            dataUrl = await drawQRWithLabelAndLogo(
+              dataUrl,
+              label,
+              logoUrl,
+              settings.size,
+              settings.fgColor,
+              settings.transparentBg ? '#ffffff' : settings.bgColor,
+              settings.transparentBg,
+              settings.logoSize
+            );
+          } catch (err) {
+            console.warn('Failed to draw label/logo for QR batch item:', err);
+          }
+        }
+
         const base64 = dataUrl.split(',')[1];
-        zip.file(`${filename?.trim() || `qr-${i + 1}`}.png`, base64, { base64: true });
-      } catch {}
+        zip.file(`${filename?.trim() || `qr-${item.row}`}.png`, base64, { base64: true });
+      } catch (err) {
+        console.warn('Failed to generate QR for batch item:', data, err);
+      }
 
       setBatchProgress(Math.round(((i + 1) / total) * 100));
+
+      if (batchDelay > 0) {
+        await new Promise(resolve => setTimeout(resolve, batchDelay));
+      }
     }
 
     const blob = await zip.generateAsync({ type: 'blob' });
@@ -745,7 +1304,7 @@ END:VEVENT`;
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <label className="block">
-                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">First Name</span>
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('firstName')}</span>
                 <input
                   type="text"
                   value={formData.vcard.firstName}
@@ -754,7 +1313,7 @@ END:VEVENT`;
                 />
               </label>
               <label className="block">
-                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Last Name</span>
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('lastName')}</span>
                 <input
                   type="text"
                   value={formData.vcard.lastName}
@@ -764,7 +1323,7 @@ END:VEVENT`;
               </label>
             </div>
             <label className="block">
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Phone</span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('phone')}</span>
               <input
                 type="tel"
                 value={formData.vcard.phone}
@@ -773,7 +1332,7 @@ END:VEVENT`;
               />
             </label>
             <label className="block">
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Email</span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('email')}</span>
               <input
                 type="email"
                 value={formData.vcard.email}
@@ -782,7 +1341,7 @@ END:VEVENT`;
               />
             </label>
             <label className="block">
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Organization</span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('organization')}</span>
               <input
                 type="text"
                 value={formData.vcard.org}
@@ -791,11 +1350,21 @@ END:VEVENT`;
               />
             </label>
             <label className="block">
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Website</span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('website')}</span>
               <input
                 type="url"
                 value={formData.vcard.url}
                 onChange={e => setFormData(prev => ({ ...prev, vcard: { ...prev.vcard, url: e.target.value } }))}
+                className={inputClass + ' mt-1'}
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('photoUrl')}</span>
+              <input
+                type="text"
+                placeholder="https://example.com/photo.jpg or data:image/png;base64,..."
+                value={formData.vcard.photo || ''}
+                onChange={e => setFormData(prev => ({ ...prev, vcard: { ...prev.vcard, photo: e.target.value } }))}
                 className={inputClass + ' mt-1'}
               />
             </label>
@@ -892,17 +1461,25 @@ END:VEVENT`;
         );
       case 'batch':
         return (
-          <div className="space-y-3">
-            <div className="flex gap-2">
-              <label className="flex-1 px-3 py-2 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-center cursor-pointer hover:border-indigo-500 transition-colors">
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <label className="flex-1 px-3 py-3 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-center cursor-pointer hover:border-indigo-500 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors flex items-center justify-center">
                 <input
                   type="file"
                   accept=".csv"
                   onChange={handleCSVUpload}
                   className="hidden"
                 />
-                <span className="text-sm text-gray-600 dark:text-gray-400">Upload CSV</span>
+                <span className="text-sm font-medium text-gray-600 dark:text-gray-400">Upload CSV File</span>
               </label>
+              <button
+                type="button"
+                onClick={handleDownloadSampleCSV}
+                className="px-4 py-3 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all font-medium text-sm flex items-center justify-center gap-2 shadow-sm"
+              >
+                <Download size={16} />
+                Download Sample CSV
+              </button>
             </div>
             <label className="block">
               <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Or paste CSV data</span>
@@ -910,13 +1487,102 @@ END:VEVENT`;
                 value={csvData}
                 onChange={e => setCsvData(e.target.value)}
                 className={inputClass + ' mt-1 font-mono text-sm'}
-                rows={6}
-                placeholder="content,filename&#10;https://example1.com,site1&#10;https://example2.com,site2"
+                rows={5}
+                placeholder="content,filename,label,logo_url&#10;https://example1.com,site1,My Site 1,https://example.com/logo.png&#10;https://example2.com,site2"
               />
             </label>
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              First column: content, Second column: filename (optional)
+              Format: first column is raw content, second column is filename (optional), third column is label (optional), fourth column is logo_url (optional)
             </p>
+
+            {/* Delay configuration setting */}
+            <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-lg border border-gray-200 dark:border-gray-700/60 space-y-1.5">
+              <label className="block">
+                <span className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider flex items-center justify-between">
+                  <span>{t('batchDelayLabel')}</span>
+                  <span className="font-mono text-indigo-600 dark:text-indigo-400 font-bold">{batchDelay} ms</span>
+                </span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1000"
+                  step="10"
+                  value={batchDelay}
+                  onChange={e => setBatchDelay(parseInt(e.target.value, 10))}
+                  className="w-full mt-2"
+                />
+              </label>
+              <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                {t('batchDelayHelp')}
+              </p>
+            </div>
+
+            {/* Live Data Preview and Validation Dashboard */}
+            {batchItems.length > 0 && (
+              <div className="mt-4 space-y-3 bg-gray-50 dark:bg-gray-900/40 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
+                <div className="flex items-center justify-between border-b dark:border-gray-700 pb-2">
+                  <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                    CSV Preview & Validation ({batchItems.length} rows)
+                  </h3>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+                    csvError ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400'
+                  }`}>
+                    {csvError ? 'Needs Review' : 'Validated & Ready'}
+                  </span>
+                </div>
+
+                {csvError && (
+                  <div className="p-2 bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 text-xs rounded border border-red-100 dark:border-red-900/50 flex gap-2 items-start">
+                    <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+                    <span>{csvError}</span>
+                  </div>
+                )}
+
+                <div className="max-h-48 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded overflow-hidden">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-b dark:border-gray-700">
+                        <th className="p-2 font-medium w-12 text-center">Row</th>
+                        <th className="p-2 font-medium">Content</th>
+                        <th className="p-2 font-medium">Filename</th>
+                        <th className="p-2 font-medium">Label</th>
+                        <th className="p-2 font-medium">Logo URL</th>
+                        <th className="p-2 font-medium w-24 text-center">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
+                      {batchItems.map(item => (
+                        <tr key={item.row} className={`${item.isValid ? 'hover:bg-gray-50/50 dark:hover:bg-gray-800/20' : 'bg-red-50/40 dark:bg-red-900/10'}`}>
+                          <td className="p-2 text-center font-mono text-gray-500">{item.row}</td>
+                          <td className="p-2 font-mono truncate max-w-[150px] text-gray-700 dark:text-gray-300" title={item.content}>
+                            {item.content || <span className="text-red-400 italic">empty</span>}
+                          </td>
+                          <td className="p-2 font-mono text-gray-600 dark:text-gray-400">
+                            {item.filename ? `${item.filename}.png` : <span className="text-gray-400 italic">qr-{item.row}.png</span>}
+                          </td>
+                          <td className="p-2 font-mono text-gray-600 dark:text-gray-400">
+                            {item.label || <span className="text-gray-400 italic">-</span>}
+                          </td>
+                          <td className="p-2 font-mono text-gray-600 dark:text-gray-400 truncate max-w-[120px]" title={item.logoUrl}>
+                            {item.logoUrl || <span className="text-gray-400 italic">-</span>}
+                          </td>
+                          <td className="p-2 text-center">
+                            <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                              item.isValid 
+                                ? (item.type === 'url' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300' : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300')
+                                : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
+                            }`}>
+                              {item.isValid ? (item.type === 'url' ? 'URL' : 'Text') : 'Error'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             {batchProgress > 0 && (
               <div className="space-y-1">
                 <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
@@ -930,13 +1596,71 @@ END:VEVENT`;
             )}
             <button
               onClick={generateBatch}
-              disabled={!csvData.trim()}
-              className="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              disabled={!csvData.trim() || batchItems.filter(i => i.isValid).length === 0}
+              className="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium shadow-sm"
             >
-              Generate & Download ZIP
+              Generate & Download {batchItems.filter(i => i.isValid).length} Valid QR Codes
             </button>
           </div>
         );
+      case 'analytics': {
+        const totalGenerated = Object.values(analytics).reduce((a, b) => a + b, 0);
+        const maxVal = Math.max(...Object.values(analytics), 1);
+        const sortedCategories = Object.entries(analytics).sort((a, b) => b[1] - a[1]);
+        const topCategoryName = sortedCategories[0]?.[1] > 0 ? sortedCategories[0][0] : 'None';
+
+        return (
+          <div className="space-y-5">
+            {/* Quick stats grid */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-indigo-50 dark:bg-indigo-950/30 p-4 rounded-xl border border-indigo-100/50 dark:border-indigo-900/20">
+                <p className="text-[10px] font-extrabold text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">Session Generations</p>
+                <p className="text-3xl font-extrabold text-indigo-900 dark:text-indigo-100 mt-1">{totalGenerated}</p>
+              </div>
+              <div className="bg-emerald-50 dark:bg-emerald-950/30 p-4 rounded-xl border border-emerald-100/50 dark:border-emerald-900/20">
+                <p className="text-[10px] font-extrabold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">Primary Category</p>
+                <p className="text-3xl font-extrabold text-emerald-900 dark:text-emerald-100 mt-1 capitalize truncate">{topCategoryName}</p>
+              </div>
+            </div>
+
+            {/* Simple Beautiful Bar Chart */}
+            <div className="bg-gray-50 dark:bg-gray-900/30 p-4 rounded-xl border border-gray-100 dark:border-gray-800">
+              <h3 className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-4">Content Type Distribution</h3>
+              <div className="space-y-3">
+                {Object.entries(analytics)
+                  .filter(([key]) => key !== 'analytics')
+                  .map(([key, value]) => {
+                    const percent = Math.round((value / maxVal) * 100);
+                    const displayPercent = totalGenerated > 0 ? Math.round((value / totalGenerated) * 100) : 0;
+                    return (
+                      <div key={key} className="flex items-center gap-3">
+                        <span className="w-16 text-xs font-semibold text-gray-600 dark:text-gray-400 capitalize truncate">{key}</span>
+                        <div className="flex-1 h-2.5 bg-gray-200 dark:bg-gray-700/60 rounded-full overflow-hidden relative">
+                          <div
+                            className="h-full bg-gradient-to-r from-indigo-500 to-indigo-600 rounded-full transition-all duration-500"
+                            style={{ width: `${percent}%` }}
+                          />
+                        </div>
+                        <span className="w-16 text-right text-xs font-bold text-gray-700 dark:text-gray-300 font-mono">
+                          {value} ({displayPercent}%)
+                        </span>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+
+            {/* Quick interactive tips */}
+            <div className="p-3 bg-amber-50 dark:bg-amber-950/20 text-amber-800 dark:text-amber-300 rounded-xl text-xs flex gap-3 border border-amber-100/50 dark:border-amber-900/10">
+              <AlertCircle size={16} className="flex-shrink-0 mt-0.5 text-amber-600" />
+              <div>
+                <p className="font-bold">Design Tip</p>
+                <p className="mt-0.5 opacity-90 leading-relaxed">Higher error correction is recommended for custom designs containing logos, while lower correction works best for dense text arrays.</p>
+              </div>
+            </div>
+          </div>
+        );
+      }
       default:
         return null;
     }
@@ -956,18 +1680,26 @@ END:VEVENT`;
               </div>
             </div>
             <div>
-              <h1 className="text-xl font-bold text-gray-900 dark:text-white">QR Generator</h1>
-              <p className="text-sm text-gray-500 dark:text-gray-400">Create custom QR codes</p>
+              <h1 className="text-xl font-bold text-gray-900 dark:text-white">{t('appTitle')}</h1>
+              <p className="text-sm text-gray-500 dark:text-gray-400">{t('appSubtitle')}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setLanguage(lang => lang === 'en' ? 'fa' : 'en')}
+              className="px-2.5 py-1.5 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 font-bold text-xs transition-colors flex items-center gap-1 border border-gray-300/40 dark:border-gray-600/40"
+              aria-label="Switch Language"
+            >
+              <Globe size={15} />
+              <span>{language === 'en' ? 'FA' : 'EN'}</span>
+            </button>
             <button
               onClick={() => {
                 setShowHistory(!showHistory);
                 setShowPresets(false);
               }}
               className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
-              aria-label="History"
+              aria-label={t('history')}
             >
               <History size={20} />
             </button>
@@ -977,14 +1709,14 @@ END:VEVENT`;
                 setShowHistory(false);
               }}
               className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
-              aria-label="Presets"
+              aria-label={t('presets')}
             >
               <Bookmark size={20} />
             </button>
             <button
               onClick={() => setDarkMode(!darkMode)}
               className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
-              aria-label={darkMode ? 'Light mode' : 'Dark mode'}
+              aria-label={darkMode ? t('lightMode') : t('darkMode')}
             >
               {darkMode ? <Sun size={20} /> : <Moon size={20} />}
             </button>
@@ -1050,6 +1782,63 @@ END:VEVENT`;
                   </div>
                 </div>
 
+                {/* QR Code Complexity / Version Indicator */}
+                {contentType !== 'batch' && contentType !== 'analytics' && (
+                  <div className="bg-gray-50 dark:bg-gray-800/50 p-3 rounded-lg border border-gray-100 dark:border-gray-700/50">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">QR Complexity Metrics</span>
+                      <span className="text-xs font-mono font-bold text-indigo-600 dark:text-indigo-400">Version {qrVersion}/40</span>
+                    </div>
+                    <div className="text-xs text-gray-600 dark:text-gray-400 space-y-1">
+                      <div className="flex justify-between">
+                        <span>Grid Dimensions:</span>
+                        <span className="font-mono">{moduleCount} × {moduleCount} modules</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Density Level:</span>
+                        <span className={`font-medium ${
+                          qrVersion < 5 ? 'text-green-600 dark:text-green-400' :
+                          qrVersion < 12 ? 'text-amber-600 dark:text-amber-400' :
+                          'text-rose-600 dark:text-rose-400'
+                        }`}>
+                          {qrVersion < 5 ? 'Low (Highly Scannable)' : qrVersion < 12 ? 'Medium' : 'High (Dense)'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Auto warning / suggestion to lower error correction if version >= 10 and EC is Q or H */}
+                    {qrVersion >= 10 && (settings.errorCorrection === 'H' || settings.errorCorrection === 'Q') && (
+                      <div className="mt-2.5 p-2 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/50 rounded text-xs text-amber-800 dark:text-amber-300">
+                        <p className="font-semibold flex items-center gap-1.5 mb-1">
+                          <AlertCircle size={14} className="text-amber-600 dark:text-amber-400 flex-shrink-0" />
+                          High QR Density Warning
+                        </p>
+                        <p className="mb-2 text-[11px] leading-relaxed">
+                          With high data density, lowering error correction improves scan reliability. Consider switching to Medium (M) or Low (L).
+                        </p>
+                        <div className="flex gap-2">
+                          {settings.errorCorrection !== 'M' && (
+                            <button
+                              type="button"
+                              onClick={() => setSettings(prev => ({ ...prev, errorCorrection: 'M' }))}
+                              className="px-2 py-1 bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/40 dark:hover:bg-amber-900/60 text-amber-900 dark:text-amber-200 rounded text-[11px] font-semibold transition-colors"
+                            >
+                              Set to Medium (M)
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setSettings(prev => ({ ...prev, errorCorrection: 'L' }))}
+                            className="px-2 py-1 bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/40 dark:hover:bg-amber-900/60 text-amber-900 dark:text-amber-200 rounded text-[11px] font-semibold transition-colors"
+                          >
+                            Set to Low (L)
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Size */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -1065,57 +1854,137 @@ END:VEVENT`;
                   />
                 </div>
 
-                {/* Colors */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Foreground
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="color"
-                        value={settings.fgColor}
-                        onChange={e => setSettings(prev => ({ ...prev, fgColor: e.target.value }))}
-                        className="w-10 h-10 rounded cursor-pointer"
-                      />
-                      <input
-                        type="text"
-                        value={settings.fgColor}
-                        onChange={e => setSettings(prev => ({ ...prev, fgColor: e.target.value }))}
-                        className={inputClass + ' flex-1'}
-                      />
-                    </div>
+                {/* Frame Templates */}
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                    Frame Template
+                  </label>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {[
+                      { id: 'none', label: 'No Frame' },
+                      { id: 'scan_me', label: 'Scan Me' },
+                      { id: 'website', label: 'Website' },
+                      { id: 'contact', label: 'Contact' }
+                    ].map(frameOpt => (
+                      <button
+                        key={frameOpt.id}
+                        type="button"
+                        onClick={() => setSettings(prev => ({ ...prev, frame: frameOpt.id as QRSettings['frame'] }))}
+                        className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all border ${
+                          (settings.frame || 'none') === frameOpt.id
+                            ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
+                            : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                        }`}
+                      >
+                        {frameOpt.label}
+                      </button>
+                    ))}
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Background
+                </div>
+
+                {/* Colors & Palette Presets */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300">
+                      Color Palette Preset
                     </label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="color"
-                        value={settings.bgColor}
-                        onChange={e => setSettings(prev => ({ ...prev, bgColor: e.target.value }))}
-                        className="w-10 h-10 rounded cursor-pointer"
-                        disabled={settings.transparentBg}
-                      />
-                      <input
-                        type="text"
-                        value={settings.bgColor}
-                        onChange={e => setSettings(prev => ({ ...prev, bgColor: e.target.value }))}
-                        className={inputClass + ' flex-1'}
-                        disabled={settings.transparentBg}
-                      />
-                    </div>
-                    <label className="flex items-center gap-2 mt-2">
-                      <input
-                        type="checkbox"
-                        checked={settings.transparentBg}
-                        onChange={e => setSettings(prev => ({ ...prev, transparentBg: e.target.checked }))}
-                        className="rounded text-indigo-600"
-                      />
-                      <span className="text-sm text-gray-600 dark:text-gray-400">Transparent</span>
-                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setShowCustomColors(!showCustomColors)}
+                      className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
+                    >
+                      {showCustomColors ? 'Hide Custom Colors' : 'Show Custom Colors'}
+                    </button>
                   </div>
+
+                  {/* Preset Theme Grid */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {colorPalettes.map(palette => {
+                      const isActive = activePaletteId === palette.id && !showCustomColors;
+                      return (
+                        <button
+                          key={palette.id}
+                          type="button"
+                          onClick={() => {
+                            setActivePaletteId(palette.id);
+                            setShowCustomColors(false);
+                            setSettings(prev => ({
+                              ...prev,
+                              fgColor: palette.fgColor,
+                              bgColor: palette.bgColor,
+                              transparentBg: false,
+                            }));
+                          }}
+                          className={`flex items-center gap-2 p-2 rounded-xl text-left border transition-all ${
+                            isActive
+                              ? 'bg-indigo-50/50 dark:bg-indigo-950/20 border-indigo-500 shadow-sm'
+                              : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                          }`}
+                        >
+                          <div className="flex -space-x-1.5 flex-shrink-0">
+                            <span className="w-4 h-4 rounded-full border border-gray-300 dark:border-gray-600" style={{ backgroundColor: palette.fgColor }} />
+                            <span className="w-4 h-4 rounded-full border border-gray-300 dark:border-gray-600" style={{ backgroundColor: palette.bgColor }} />
+                          </div>
+                          <span className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{palette.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Custom color manual input drawer */}
+                  {showCustomColors && (
+                    <div className="grid grid-cols-2 gap-4 mt-3 bg-gray-50 dark:bg-gray-900/30 p-3 rounded-xl border border-gray-100 dark:border-gray-800 transition-all">
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1.5">
+                          Foreground
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={settings.fgColor}
+                            onChange={e => setSettings(prev => ({ ...prev, fgColor: e.target.value }))}
+                            className="w-8 h-8 rounded-lg cursor-pointer flex-shrink-0 border dark:border-gray-700"
+                          />
+                          <input
+                            type="text"
+                            value={settings.fgColor}
+                            onChange={e => setSettings(prev => ({ ...prev, fgColor: e.target.value }))}
+                            className={inputClass + ' text-xs py-1 px-2'}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1.5">
+                          Background
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={settings.bgColor}
+                            onChange={e => setSettings(prev => ({ ...prev, bgColor: e.target.value }))}
+                            className="w-8 h-8 rounded-lg cursor-pointer flex-shrink-0 border dark:border-gray-700"
+                            disabled={settings.transparentBg}
+                          />
+                          <input
+                            type="text"
+                            value={settings.bgColor}
+                            onChange={e => setSettings(prev => ({ ...prev, bgColor: e.target.value }))}
+                            className={inputClass + ' text-xs py-1 px-2'}
+                            disabled={settings.transparentBg}
+                          />
+                        </div>
+                        <label className="flex items-center gap-1.5 mt-1.5">
+                          <input
+                            type="checkbox"
+                            checked={settings.transparentBg}
+                            onChange={e => setSettings(prev => ({ ...prev, transparentBg: e.target.checked }))}
+                            className="rounded text-indigo-600 w-3.5 h-3.5"
+                          />
+                          <span className="text-[11px] font-medium text-gray-600 dark:text-gray-400">Transparent</span>
+                        </label>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Margin */}
@@ -1317,14 +2186,14 @@ END:VEVENT`;
           <div className="fixed inset-0 bg-black/50 z-50 flex items-start justify-end p-4">
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md max-h-[80vh] overflow-hidden">
               <div className="flex items-center justify-between p-4 border-b dark:border-gray-700">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">History</h3>
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{t('history')}</h3>
                 <div className="flex gap-2">
                   <button
                     onClick={clearHistory}
                     disabled={history.length === 0}
                     className="text-sm text-red-500 hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Clear
+                    {t('clear')}
                   </button>
                   <button
                     onClick={() => setShowHistory(false)}
@@ -1336,33 +2205,60 @@ END:VEVENT`;
               </div>
               <div className="overflow-y-auto max-h-[60vh]">
                 {history.length === 0 ? (
-                  <p className="p-4 text-center text-gray-500 dark:text-gray-400">No history yet</p>
+                  <p className="p-4 text-center text-gray-500 dark:text-gray-400">{t('noHistory')}</p>
                 ) : (
                   <div className="divide-y dark:divide-gray-700">
                     {history.map(item => (
-                      <button
+                      <div
                         key={item.id}
-                        onClick={() => restoreFromHistory(item)}
-                        className="w-full p-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700"
+                        className="p-4 hover:bg-gray-50/50 dark:hover:bg-gray-700/30 transition-colors"
                       >
-                        <div className="flex items-center gap-3">
-                          <div className="w-12 h-12 bg-gray-100 dark:bg-gray-700 rounded flex items-center justify-center">
-                            {contentTypes.find(t => t.id === item.contentType)?.icon}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-gray-900 dark:text-white">
-                              {item.label}
-                            </p>
-                            <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                              {item.content.slice(0, 40)}
-                              {item.content.length > 40 && '...'}
-                            </p>
-                            <p className="text-xs text-gray-400 dark:text-gray-500">
-                              {new Date(item.timestamp).toLocaleString()}
-                            </p>
-                          </div>
+                        <div className="flex items-start justify-between gap-3">
+                          <button
+                            onClick={() => restoreFromHistory(item)}
+                            className="flex-1 flex items-start gap-3 text-start focus:outline-none"
+                            title="Click to restore this QR"
+                          >
+                            <div className="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded flex items-center justify-center flex-shrink-0">
+                              {contentTypes.find(t => t.id === item.contentType)?.icon}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 dark:text-white flex items-center gap-1.5 flex-wrap">
+                                {item.label}
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-mono">
+                                  {item.contentType}
+                                </span>
+                              </p>
+                              <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
+                                {item.content.slice(0, 40)}
+                                {item.content.length > 40 && '...'}
+                              </p>
+                              <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">
+                                {new Date(item.timestamp).toLocaleString(language === 'fa' ? 'fa-IR' : 'en-US')}
+                              </p>
+                            </div>
+                          </button>
+                          <button
+                            onClick={() => restoreFromHistory(item)}
+                            className="text-xs px-2 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/40 dark:hover:bg-indigo-900/60 text-indigo-600 dark:text-indigo-300 rounded font-medium transition-all flex-shrink-0"
+                          >
+                            {t('restore')}
+                          </button>
                         </div>
-                      </button>
+                        {/* Notes annotation */}
+                        <div className="mt-2.5">
+                          <label className="block text-[10px] font-semibold text-gray-400 dark:text-gray-500 mb-1">
+                            {t('historyNotesLabel')}
+                          </label>
+                          <input
+                            type="text"
+                            value={item.notes || ''}
+                            placeholder={t('addNotesPlaceholder')}
+                            onChange={e => updateHistoryNotes(item.id, e.target.value)}
+                            className="w-full px-2.5 py-1 text-xs border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded focus:ring-1 focus:ring-indigo-500 focus:border-transparent transition-all"
+                          />
+                        </div>
+                      </div>
                     ))}
                   </div>
                 )}
