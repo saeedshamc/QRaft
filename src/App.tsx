@@ -714,6 +714,7 @@ function App() {
     if (!content || contentType === 'batch' || contentType === 'analytics') {
       setQrDataUrl('');
       setQrSvg('');
+      setError(null);
       return;
     }
 
@@ -726,7 +727,7 @@ function App() {
         margin: settings.margin,
         color: {
           dark: '#000000',
-          light: 'transparent',
+          light: '#ffffff00', // fully transparent (valid 8-digit hex, the 'qrcode' lib rejects the CSS keyword 'transparent')
         },
         width: settings.size,
       };
@@ -734,15 +735,19 @@ function App() {
       // Generate PNG data URL (black on transparent to color with canvas)
       const dataUrl = await QRCode.toDataURL(content, options);
 
-      // Generate SVG with gradient URL references
+      // Generate SVG using a placeholder hex for the dark modules, then swap it
+      // for the gradient reference afterwards (the 'qrcode' lib validates colors
+      // as hex and rejects raw url(#...) references passed directly).
+      const GRADIENT_PLACEHOLDER = '#123456';
       let svg = await QRCode.toString(content, {
         ...options,
         color: {
-          dark: 'url(#qr-gradient)',
-          light: settings.transparentBg ? 'transparent' : settings.bgColor,
+          dark: GRADIENT_PLACEHOLDER,
+          light: settings.transparentBg ? '#ffffff00' : settings.bgColor,
         },
         type: 'svg',
       });
+      svg = svg.replace(`stroke="${GRADIENT_PLACEHOLDER}"`, 'stroke="url(#qr-gradient)"');
 
       // Inject linear gradient defs into the SVG
       const gradientDefs = `
@@ -1277,7 +1282,7 @@ function App() {
           margin: settings.margin,
           color: {
             dark: '#000000',
-            light: 'transparent',
+            light: '#ffffff00', // fully transparent (valid 8-digit hex)
           },
           width: settings.size,
         };
