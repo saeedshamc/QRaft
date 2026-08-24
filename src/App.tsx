@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import JSZip from 'jszip';
+import AnimatedQRTool from './AnimatedQR';
 import {
   Link as LinkIcon,
   Type,
@@ -28,6 +29,7 @@ import {
   Share2,
   BarChart3,
   Globe,
+  Film,
 } from 'lucide-react';
 
 type ContentType = 'url' | 'text' | 'email' | 'phone' | 'sms' | 'wifi' | 'vcard' | 'location' | 'calendar' | 'batch' | 'analytics';
@@ -285,6 +287,7 @@ const translations = {
     copied: "Copied!",
     scanQR: "Scan QR Code",
     scanDescription: "Align QR code inside the frame to scan",
+    animatedQR: "Image ⇄ Animated QR",
     lightMode: "Light Mode",
     darkMode: "Dark Mode",
     historyNotesLabel: "Notes / Description",
@@ -364,6 +367,7 @@ const translations = {
     copied: "کپی شد!",
     scanQR: "اسکن کد QR",
     scanDescription: "کد QR را داخل قاب قرار دهید تا اسکن شود",
+    animatedQR: "تصویر ⇄ QR متحرک",
     lightMode: "حالت روز",
     darkMode: "حالت شب",
     historyNotesLabel: "یادداشت / توضیحات",
@@ -499,6 +503,7 @@ function App() {
   });
   const [showScanner, setShowScanner] = useState(false);
   const [scannerResult, setScannerResult] = useState<string | null>(null);
+  const [showAnimatedQR, setShowAnimatedQR] = useState(false);
   const [batchProgress, setBatchProgress] = useState(0);
   const [batchDelay, setBatchDelay] = useState<number>(() => {
     const saved = localStorage.getItem('qr-batch-delay');
@@ -722,7 +727,7 @@ function App() {
     setError(null);
 
     try {
-      const options: QRCode.QRCodeToFileOptions = {
+      const options = {
         errorCorrectionLevel: settings.errorCorrection,
         margin: settings.margin,
         color: {
@@ -757,7 +762,7 @@ function App() {
       <stop offset="100%" stop-color="${settings.fgColorEnd || settings.fgColor}" />
     </linearGradient>
   </defs>`;
-      svg = svg.replace(/<svg[^>]*>/, match => `${match}${gradientDefs}`);
+      svg = svg.replace(/<svg[^>]*>/, (match: string) => `${match}${gradientDefs}`);
 
       // Frame and logo rendering on canvas
       const hasFrame = settings.frame && settings.frame !== 'none';
@@ -1075,7 +1080,7 @@ function App() {
     const params = new URLSearchParams();
     params.set('type', contentType);
     if (['url', 'text', 'phone'].includes(contentType)) {
-      params.set('data', (formData as Record<string, string>)[contentType]);
+      params.set('data', (formData as unknown as Record<string, string>)[contentType]);
     } else {
       params.set('data', JSON.stringify(formData[contentType as keyof FormData]));
     }
@@ -1277,7 +1282,7 @@ function App() {
       const logoUrl = item.logoUrl;
 
       try {
-        const options: QRCode.QRCodeToFileOptions = {
+        const options = {
           errorCorrectionLevel: settings.errorCorrection,
           margin: settings.margin,
           color: {
@@ -1972,6 +1977,14 @@ function App() {
               <Bookmark size={20} />
             </button>
             <button
+              onClick={() => setShowAnimatedQR(true)}
+              className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
+              aria-label={t('animatedQR')}
+              title={t('animatedQR')}
+            >
+              <Film size={20} />
+            </button>
+            <button
               onClick={() => setDarkMode(!darkMode)}
               className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
               aria-label={darkMode ? t('lightMode') : t('darkMode')}
@@ -2075,15 +2088,13 @@ function App() {
                           With high data density, lowering error correction improves scan reliability. Consider switching to Medium (M) or Low (L).
                         </p>
                         <div className="flex gap-2">
-                          {settings.errorCorrection !== 'M' && (
-                            <button
-                              type="button"
-                              onClick={() => setSettings(prev => ({ ...prev, errorCorrection: 'M' }))}
-                              className="px-2 py-1 bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/40 dark:hover:bg-amber-900/60 text-amber-900 dark:text-amber-200 rounded text-[11px] font-semibold transition-colors"
-                            >
-                              Set to Medium (M)
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => setSettings(prev => ({ ...prev, errorCorrection: 'M' }))}
+                            className="px-2 py-1 bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/40 dark:hover:bg-amber-900/60 text-amber-900 dark:text-amber-200 rounded text-[11px] font-semibold transition-colors"
+                          >
+                            Set to Medium (M)
+                          </button>
                           <button
                             type="button"
                             onClick={() => setSettings(prev => ({ ...prev, errorCorrection: 'L' }))}
@@ -2670,6 +2681,15 @@ function App() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* Image ⇄ Animated QR Modal */}
+        {showAnimatedQR && (
+          <AnimatedQRTool
+            language={language}
+            darkMode={darkMode}
+            onClose={() => setShowAnimatedQR(false)}
+          />
         )}
 
         {/* Preset Modal */}
