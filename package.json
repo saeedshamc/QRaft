@@ -13,6 +13,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
     "gifenc": "^1.0.3",
+    "gifuct-js": "^2.1.2",
     "jsqr": "^1.4.0",
     "jszip": "^3.10.1",
     "lucide-react": "^0.344.0",

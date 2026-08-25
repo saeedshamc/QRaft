@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import JSZip from 'jszip';
 import { GIFEncoder, quantize, applyPalette } from 'gifenc';
+import { parseGIF, decompressFrames, type ParsedFrame } from 'gifuct-js';
 import {
   X,
   Play,
@@ -113,6 +114,86 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function isGifFile(file: File): boolean {
+  return file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+}
+
+// Decodes every frame of an uploaded animated GIF — not just the first one —
+// by properly compositing each frame onto a persistent canvas according to
+// the GIF disposal spec (so it works correctly for any real .gif, including
+// the exact file this tool exports), then runs jsQR against each composited
+// frame in sequence.
+async function scanGifFile(file: File, onFrameDecoded: (text: string) => void): Promise<void> {
+  const buffer = await file.arrayBuffer();
+  const parsedGif = parseGIF(buffer);
+  const frames: ParsedFrame[] = decompressFrames(parsedGif, true);
+  if (frames.length === 0) return;
+
+  const fullWidth = parsedGif.lsd.width;
+  const fullHeight = parsedGif.lsd.height;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = fullWidth;
+  canvas.height = fullHeight;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return;
+
+  const patchCanvas = document.createElement('canvas');
+  const patchCtx = patchCanvas.getContext('2d');
+  if (!patchCtx) return;
+
+  const scanCanvas = document.createElement('canvas');
+  scanCanvas.width = fullWidth;
+  scanCanvas.height = fullHeight;
+  const scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
+  if (!scanCtx) return;
+
+  let previousFrame: ParsedFrame | null = null;
+  let savedRegion: ImageData | null = null;
+
+  for (let i = 0; i < frames.length; i++) {
+    const frame = frames[i];
+    const { left, top, width, height } = frame.dims;
+
+    // Apply the PREVIOUS frame's disposal method now, right before drawing
+    // this frame — that is when the GIF spec says disposal takes effect.
+    if (previousFrame) {
+      const p = previousFrame.dims;
+      if (previousFrame.disposalType === 2) {
+        ctx.clearRect(p.left, p.top, p.width, p.height);
+      } else if (previousFrame.disposalType === 3 && savedRegion) {
+        ctx.putImageData(savedRegion, p.left, p.top);
+      }
+      // disposalType 0 or 1: leave the canvas as-is.
+    }
+
+    // If this frame will need "restore to previous" disposal afterwards,
+    // snapshot the region it's about to overwrite first.
+    savedRegion = frame.disposalType === 3 ? ctx.getImageData(left, top, width, height) : null;
+
+    patchCanvas.width = width;
+    patchCanvas.height = height;
+    const patchImageData = patchCtx.createImageData(width, height);
+    patchImageData.data.set(frame.patch);
+    patchCtx.putImageData(patchImageData, 0, 0);
+    ctx.drawImage(patchCanvas, left, top);
+
+    // The main canvas now holds this frame fully composited — scan it.
+    scanCtx.clearRect(0, 0, fullWidth, fullHeight);
+    scanCtx.drawImage(canvas, 0, 0);
+    const imageData = scanCtx.getImageData(0, 0, fullWidth, fullHeight);
+    const code = jsQR(imageData.data, fullWidth, fullHeight, { inversionAttempts: 'attemptBoth' });
+    if (code && code.data) onFrameDecoded(code.data);
+
+    previousFrame = frame;
+
+    if (i % 8 === 0) {
+      // Yield periodically so the UI stays responsive on long GIFs.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+}
+
 // Non-standard torch capability, not present in lib.dom.d.ts.
 interface TorchCapabilities extends MediaTrackCapabilities {
   torch?: boolean;
@@ -170,7 +251,7 @@ const dict = {
     stopCamera: 'Stop camera',
     torchOn: 'Flashlight',
     torchOff: 'Flashlight off',
-    uploadFrames: 'Or upload photos of captured frames',
+    uploadFrames: 'Or upload the exported .gif itself, or photos of captured frames',
     waitingFirstFrame: 'Point the camera steadily at the animated QR code',
     receivedFrames: '{n} / {t} frames received',
     reconstructed: 'Image reconstructed successfully',
@@ -223,7 +304,7 @@ const dict = {
     stopCamera: 'توقف دوربین',
     torchOn: 'روشن کردن فلاش',
     torchOff: 'خاموش کردن فلاش',
-    uploadFrames: 'یا عکس فریم‌های گرفته‌شده را آپلود کنید',
+    uploadFrames: 'یا خود فایل GIF خروجی، یا عکس فریم‌های گرفته‌شده را آپلود کنید',
     waitingFirstFrame: 'دوربین را به‌صورت ثابت روی کد QR متحرک بگیرید',
     receivedFrames: '{n} از {t} فریم دریافت شد',
     reconstructed: 'تصویر با موفقیت بازسازی شد',
@@ -918,6 +999,12 @@ const DecodePanel: React.FC<{ d: Dict }> = ({ d }) => {
     async (files: FileList) => {
       for (const file of Array.from(files)) {
         try {
+          if (isGifFile(file)) {
+            // Full animated GIF: decode and scan every frame in it.
+            await scanGifFile(file, handleDecodedText);
+            continue;
+          }
+          // A single still photo of one frame (e.g. a phone photo of a screen).
           const dataUrl = await readFileAsDataURL(file);
           const img = await loadImageEl(dataUrl);
           const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
