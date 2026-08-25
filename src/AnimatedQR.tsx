@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import JSZip from 'jszip';
+import { GIFEncoder, quantize, applyPalette } from 'gifenc';
 import {
   X,
   Play,
@@ -18,6 +19,8 @@ import {
   ChevronRight,
   Image as ImageIcon,
   ScanLine,
+  Clapperboard,
+  Loader2,
 } from 'lucide-react';
 
 /* ============================================================================
@@ -155,6 +158,9 @@ const dict = {
     pause: 'Pause',
     loop: 'Loop',
     downloadZip: 'Download frames (.zip)',
+    downloadGif: 'Download as GIF (all-in-one)',
+    generatingGif: 'Building GIF…',
+    gifReady: 'GIF ready',
     frameOf: 'Frame {n} / {t}',
     chooseImageFirst: 'Choose a small, simple image to begin — photos work best under a few hundred pixels.',
     tooManyFrames: 'That produces {n} frames. For faster, more reliable scanning, try a smaller size or lower quality.',
@@ -205,6 +211,9 @@ const dict = {
     pause: 'توقف',
     loop: 'تکرار خودکار',
     downloadZip: 'دانلود فریم‌ها (zip.)',
+    downloadGif: 'دانلود به‌صورت GIF (یکجا)',
+    generatingGif: 'در حال ساخت GIF…',
+    gifReady: 'GIF آماده شد',
     frameOf: 'فریم {n} از {t}',
     chooseImageFirst: 'یک تصویر کوچک و ساده انتخاب کنید — تصاویر زیر چند صد پیکسل بهترین نتیجه را می‌دهند.',
     tooManyFrames: 'این تنظیمات {n} فریم تولید می‌کند. برای اسکن سریع‌تر و مطمئن‌تر، ابعاد یا کیفیت را کاهش دهید.',
@@ -320,6 +329,7 @@ const EncodePanel: React.FC<{ d: Dict }> = ({ d }) => {
   const [sessionId, setSessionId] = useState<string>('');
   const [genProgress, setGenProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [gifProgress, setGifProgress] = useState<{ done: number; total: number } | null>(null);
 
   const [currentFrame, setCurrentFrame] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -436,6 +446,64 @@ const EncodePanel: React.FC<{ d: Dict }> = ({ d }) => {
     a.download = 'qraft-animated-frames.zip';
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  // Bakes all QR frames into a single looping animated GIF file, using the
+  // current playback speed as the per-frame delay, so it plays back exactly
+  // like the on-screen preview.
+  const downloadGif = async () => {
+    if (qrFrames.length === 0) return;
+    setError(null);
+    setGifProgress({ done: 0, total: qrFrames.length });
+    try {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('canvas unavailable');
+
+      const firstImg = await loadImageEl(qrFrames[0]);
+      canvas.width = firstImg.naturalWidth;
+      canvas.height = firstImg.naturalHeight;
+
+      // All QR frames share the same black/white palette, so a palette built
+      // from the first frame covers every frame — build it once up front.
+      ctx.drawImage(firstImg, 0, 0, canvas.width, canvas.height);
+      const firstFrameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const palette = quantize(firstFrameData.data, 64);
+
+      const gif = GIFEncoder();
+      const delayMs = Math.round(1000 / fps);
+
+      for (let i = 0; i < qrFrames.length; i++) {
+        const img = i === 0 ? firstImg : await loadImageEl(qrFrames[i]);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const indexed = applyPalette(frameData.data, palette);
+        gif.writeFrame(indexed, canvas.width, canvas.height, {
+          palette: i === 0 ? palette : undefined,
+          delay: delayMs,
+          repeat: 0,
+        });
+        if (i % 5 === 0 || i === qrFrames.length - 1) {
+          setGifProgress({ done: i + 1, total: qrFrames.length });
+          // Yield to the main thread periodically so the UI stays responsive.
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+      gif.finish();
+      const bytes = gif.bytes();
+      const blob = new Blob([bytes], { type: 'image/gif' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'qraft-animated-qr.gif';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGifProgress(null);
+    }
   };
 
   return (
@@ -641,6 +709,30 @@ const EncodePanel: React.FC<{ d: Dict }> = ({ d }) => {
               <div className="font-mono text-gray-700 dark:text-gray-200">{sessionId}</div>
             </div>
           </div>
+
+          {gifProgress && (
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400">
+                <span>{d.generatingGif}</span>
+                <span>{gifProgress.done}/{gifProgress.total}</span>
+              </div>
+              <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-indigo-600 transition-all"
+                  style={{ width: `${(gifProgress.done / gifProgress.total) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={downloadGif}
+            disabled={!!gifProgress}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60"
+          >
+            {gifProgress ? <Loader2 size={15} className="animate-spin" /> : <Clapperboard size={15} />}
+            {d.downloadGif}
+          </button>
 
           <button
             onClick={downloadZip}
@@ -910,9 +1002,9 @@ const DecodePanel: React.FC<{ d: Dict }> = ({ d }) => {
       ) : (
         <>
           <div className="relative aspect-square bg-black rounded-xl overflow-hidden">
+            <video ref={videoRef} className="w-full h-full object-cover" playsInline muted autoPlay />
             {cameraActive ? (
               <>
-                <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
                 <div className="absolute inset-8 border-2 border-white/60 rounded-lg pointer-events-none" />
                 {torchSupported && (
                   <button
@@ -925,7 +1017,7 @@ const DecodePanel: React.FC<{ d: Dict }> = ({ d }) => {
                 )}
               </>
             ) : (
-              <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-gray-400">
+              <div className="absolute inset-0 bg-black flex flex-col items-center justify-center gap-3 text-gray-400">
                 <Camera size={32} />
               </div>
             )}
